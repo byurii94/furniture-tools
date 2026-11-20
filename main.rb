@@ -1,11 +1,12 @@
 # frozen_string_literal: true
 
 require 'json'
+require 'fileutils'
 require 'sketchup'
 require 'extensions'
 
 module FurnitureTools
-  VERSION = "1.0.2" unless const_defined?(:VERSION)
+  VERSION = "1.0.3" unless const_defined?(:VERSION)
   REMOTE_BASE_URL = "https://raw.githubusercontent.com/byurii94/furniture-tools/main" unless const_defined?(:REMOTE_BASE_URL)
 
   def self.parse_float(val)
@@ -48,7 +49,21 @@ module FurnitureTools
 
   def self.download_and_install_update(new_version)
     plugin_dir = File.dirname(__FILE__)
-    files = ["main.rb", "dialog.html"]
+    files = [
+      "main.rb",
+      "dialog.html",
+      "images/shelf_16.png",
+      "images/shelf_24.png",
+      "images/facade_16.png",
+      "images/facade_24.png"
+    ]
+    optional_files = [
+      "dialog.html",
+      "images/shelf_16.png",
+      "images/shelf_24.png",
+      "images/facade_16.png",
+      "images/facade_24.png"
+    ]
     downloaded = {}
     pending = files.length
     failed = false
@@ -60,8 +75,8 @@ module FurnitureTools
         next if failed
         if resp && resp.status_code == 200 && !resp.body.to_s.empty?
           downloaded[fname] = resp.body
-        elsif fname == "dialog.html" && resp && resp.status_code == 404
-          # Пропускаємо, якщо dialog.html відсутній у репозиторії
+        elsif optional_files.include?(fname) && resp && resp.status_code == 404
+          # Пропускаємо, якщо опціонального файлу ще немає в репозиторії
         else
           failed = true
           UI.messagebox("Не вдалося завантажити файл #{fname} (код: #{resp ? resp.status_code : 'немає відповіді'}).")
@@ -70,7 +85,9 @@ module FurnitureTools
         pending -= 1
         if pending == 0 && !failed
           downloaded.each do |name, content|
-            File.binwrite(File.join(plugin_dir, name), content)
+            target_path = File.join(plugin_dir, name)
+            FileUtils.mkdir_p(File.dirname(target_path))
+            File.binwrite(target_path, content)
           end
           UI.messagebox(
             "Меблеві калькулятори оновлено до версії #{new_version}!\n" \
