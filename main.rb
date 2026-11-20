@@ -5,7 +5,7 @@ require 'sketchup'
 require 'extensions'
 
 module FurnitureTools
-  VERSION = "1.0.0" unless const_defined?(:VERSION)
+  VERSION = "1.0.1" unless const_defined?(:VERSION)
   REMOTE_BASE_URL = "https://raw.githubusercontent.com/byurii94/furniture-tools/main" unless const_defined?(:REMOTE_BASE_URL)
 
   def self.parse_float(val)
