@@ -926,7 +926,7 @@ unless file_loaded?(__FILE__)
   toolbar.add_item(facade_cmd)
   toolbar.restore
 
-  UI.start_timer(2.0, false) { FurnitureTools.check_for_updates(silent: true) }
+  UI.start_timer(30.0, false) { FurnitureTools.check_for_updates(silent: true) }
 
   file_loaded(__FILE__)
 end
