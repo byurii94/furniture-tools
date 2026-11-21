@@ -6,7 +6,7 @@ require 'sketchup'
 require 'extensions'
 
 module FurnitureTools
-  VERSION = "1.0.4" unless const_defined?(:VERSION)
+  VERSION = "1.0.5" unless const_defined?(:VERSION)
   REMOTE_BASE_URL = "https://raw.githubusercontent.com/byurii94/furniture-tools/main" unless const_defined?(:REMOTE_BASE_URL)
 
   def self.parse_float(val)
@@ -501,13 +501,13 @@ module ShelfCalculator
 end
 
 module FacadeCalculator
-  class FacadeFaceTool
+  class FacadeEdgeTool
     def initialize(group, dims_mm)
       @group = group
       @bb = group&.bounds
       @dims_mm = dims_mm
-      @hover_face_info = nil
-      @selected_face_info = nil
+      @hover_edge_info = nil
+      @selected_edge_info = nil
       @dialog = nil
       @generated = false
       @prev_transparency = nil
@@ -524,15 +524,15 @@ module FacadeCalculator
     end
 
     def activate
-      @hover_face_info = nil
-      @selected_face_info = nil
+      @hover_edge_info = nil
+      @selected_edge_info = nil
       @generated = false
 
       opts = Sketchup.active_model.rendering_options
       @prev_transparency = opts["ModelTransparency"]
       opts["ModelTransparency"] = true
 
-      Sketchup.set_status_text("🗄️ КАЛЬКУЛЯТОР ФАСАДІВ | Наведіть курсор на грань боксу та клікніть, щоб обрати напрямок | ESC = Вихід")
+      Sketchup.set_status_text("🗄️ КАЛЬКУЛЯТОР ФАСАДІВ | Наведіть курсор на вертикальне або горизонтальне ребро та клікніть | ESC = Вихід")
       Sketchup.active_model.active_view&.invalidate
     end
 
@@ -553,32 +553,32 @@ module FacadeCalculator
     end
 
     def onMouseMove(flags, x, y, view)
-      return if @selected_face_info
+      return if @selected_edge_info
       return unless @group && @group.valid? && @bb
 
       ip = view.inputpoint(x, y)
-      face = ip.face
+      edge = ip.edge
 
-      if face && face_belongs_to_group?(face, @group)
-        info = analyze_face(face, @group)
+      if edge && edge_belongs_to_group?(edge, @group)
+        info = analyze_edge(edge, @group)
         if info
-          @hover_face_info = info
-          Sketchup.set_status_text("🗄️ Грань [ #{info[:label]} ] → #{direction_label(info[:direction])} — клікніть для налаштувань | ESC = Вихід")
+          @hover_edge_info = info
+          Sketchup.set_status_text("🗄️ Ребро вздовж осі [ #{info[:axis_label]} ] → #{direction_label(info[:direction])} — клікніть для налаштувань | ESC = Вихід")
           view.invalidate
           return
         end
       end
 
-      @hover_face_info = nil
-      Sketchup.set_status_text("🗄️ Наведіть курсор на грань виділеного боксу та клікніть | ESC = Вихід")
+      @hover_edge_info = nil
+      Sketchup.set_status_text("🗄️ Наведіть курсор на вертикальне або горизонтальне ребро боксу/площини та клікніть | ESC = Вихід")
       view.invalidate
     end
 
     def onLButtonDown(flags, x, y, view)
-      return if @selected_face_info
-      return unless @hover_face_info
+      return if @selected_edge_info
+      return unless @hover_edge_info
 
-      @selected_face_info = @hover_face_info
+      @selected_edge_info = @hover_edge_info
       normalize_fixed_sizes!
       open_dialog
       view.invalidate
@@ -587,21 +587,17 @@ module FacadeCalculator
     def draw(view)
       return unless @bb && @group&.valid?
 
-      if @selected_face_info.nil? && @hover_face_info
-        pts = @hover_face_info[:loop_points]
-        if pts && pts.length >= 3
+      if @selected_edge_info.nil? && @hover_edge_info
+        pts = @hover_edge_info[:edge_pts]
+        if pts && pts.length == 2
           view.drawing_color = Sketchup::Color.new(40, 185, 65)
-          view.line_width = 5
-          closed_pts = []
-          pts.each_with_index do |p, idx|
-            closed_pts << p << pts[(idx + 1) % pts.length]
-          end
-          view.draw(GL_LINES, closed_pts)
+          view.line_width = 8
+          view.draw(GL_LINES, pts)
         end
         return
       end
 
-      return unless @selected_face_info
+      return unless @selected_edge_info
 
       boxes = compute_facade_boxes
       return if boxes.nil? || boxes.empty?
@@ -619,50 +615,70 @@ module FacadeCalculator
 
     private
 
-    def face_belongs_to_group?(face, group)
-      return false unless face.parent.is_a?(Sketchup::ComponentDefinition)
-      group.entities.grep(Sketchup::Face).include?(face)
+    def edge_belongs_to_group?(edge, group)
+      return false unless edge.parent.is_a?(Sketchup::ComponentDefinition)
+      group.entities.grep(Sketchup::Edge).include?(edge)
     end
 
-    # Визначає сторону боксу за нормаллю грані та напрямок розбивки (Width = дверцята, Height = шухляди)
-    def analyze_face(face, group)
+    # Аналізує вибране ребро:
+    # - Вертикальне ребро (Z) -> розбивка по висоті (шухляди)
+    # - Горизонтальне ребро (X або Y) -> розбивка по ширині (дверцята) вздовж цієї осі
+    # Підтримує як площину в групі (один габарит ~ 0), так і повноцінний бокс.
+    def analyze_edge(edge, group)
       tr = group.transformation
-      n_world = face.normal.transform(tr).normalize
-      ax = n_world.x.abs
-      ay = n_world.y.abs
-      az = n_world.z.abs
+      p1 = edge.start.position.transform(tr)
+      p2 = edge.end.position.transform(tr)
+      vec = p2 - p1
+      return nil if vec.length <= 1e-6
 
-      pts = face.outer_loop.vertices.map { |v| v.position.transform(tr) }
+      n = vec.normalize
+      ax = n.x.abs
+      ay = n.y.abs
+      az = n.z.abs
+
+      w_mm = @dims_mm[:width]
+      d_mm = @dims_mm[:depth]
+      h_mm = @dims_mm[:height]
+
+      # Визначаємо площину фасаду (:front_back — площина X-Z, товщина по Y; :left_right — площина Y-Z, товщина по X)
+      plane = if d_mm < 0.5
+                :front_back
+              elsif w_mm < 0.5
+                :left_right
+              elsif h_mm < 0.5
+                :horizontal
+              else
+                w_mm >= d_mm ? :front_back : :left_right
+              end
 
       if az >= ax && az >= ay
-        # Горизонтальна грань (верх/низ): ділимо по висоті (шухляди)
-        side_label = n_world.z >= 0 ? "Верхня грань (Z+)" : "Нижня грань (Z-)"
+        # Вертикальне ребро -> розбивка по висоті (шухляди)
         {
-          side: :z,
-          plane: :horizontal,
+          axis: :z,
+          axis_label: "ВИСОТА (Z)",
+          plane: plane,
           direction: "Height",
-          label: side_label,
-          loop_points: pts
+          edge_pts: [p1, p2]
         }
-      elsif ay >= ax && ay >= az
-        # Фронтальна / тильна грань (вісь Y): розбивка по ширині (дверцята)
-        side_label = n_world.y >= 0 ? "Передня грань (Y+)" : "Задня грань (Y-)"
+      elsif ax >= ay && ax >= az
+        # Горизонтальне ребро вздовж X -> розбивка по ширині вздовж X
+        p_use = (plane == :horizontal) ? :horizontal : :front_back
         {
-          side: :y,
-          plane: :front_back,
+          axis: :x,
+          axis_label: "ШИРИНА (X)",
+          plane: p_use,
           direction: "Width",
-          label: side_label,
-          loop_points: pts
+          edge_pts: [p1, p2]
         }
       else
-        # Бокова грань (вісь X): розбивка по ширині вздовж Y (дверцята)
-        side_label = n_world.x >= 0 ? "Права грань (X+)" : "Ліва грань (X-)"
+        # Горизонтальне ребро вздовж Y -> розбивка по ширині вздовж Y (або глибині на горизонтальній площині)
+        p_use = (plane == :horizontal) ? :horizontal_y : :left_right
         {
-          side: :x,
-          plane: :left_right,
+          axis: :y,
+          axis_label: "ГЛИБИНА / ШИРИНА (Y)",
+          plane: p_use,
           direction: "Width",
-          label: side_label,
-          loop_points: pts
+          edge_pts: [p1, p2]
         }
       end
     end
@@ -706,10 +722,8 @@ module FacadeCalculator
       return nil if remainder < -0.01
 
       if free_indices.empty?
-        # Усі фасади мають фіксовані розміри — сума не повинна перевищувати доступну довжину
         return nil if (fixed_sum - net_span).abs > 0.5 && fixed_sum > net_span + 0.01
-        sizes = Array.new(num_facades) { |i| fixed_sizes[i].to_f }
-        return sizes
+        return Array.new(num_facades) { |i| fixed_sizes[i].to_f }
       end
 
       return nil if remainder <= 0.0
@@ -727,7 +741,6 @@ module FacadeCalculator
         assigned_sum += sizes[i]
       end
 
-      # Коригуємо останній вільний фасад для точної посадки в межах ніші
       diff = (net_span - assigned_sum).round(1)
       last_free_idx = free_indices.last
       sizes[last_free_idx] = (sizes[last_free_idx] + diff).round(1)
@@ -736,9 +749,8 @@ module FacadeCalculator
       sizes
     end
 
-    # Повертає масив боксів фасадів у світових координатах SketchUp (і локальні параметри для побудови)
     def compute_facade_boxes
-      return nil unless @selected_face_info && @bb && @group&.valid?
+      return nil unless @selected_edge_info && @bb && @group&.valid?
 
       n = @params[:num_facades].to_i
       t = @params[:thickness].to_f
@@ -759,14 +771,14 @@ module FacadeCalculator
       start_y = @bb.min.y
       start_z = @bb.min.z
 
-      plane = @selected_face_info[:plane]
-      direction = @selected_face_info[:direction]
+      plane = @selected_edge_info[:plane]
+      direction = @selected_edge_info[:direction]
 
       boxes = []
 
       case plane
       when :front_back
-        # Фасад лежить у площині X-Z, товщина по Y
+        # Площина X-Z (працює і для площини d_mm=0, і для боксу), товщина t задається по осі Y
         avail_w = w_mm - (gap_left + gap_right)
         avail_h = h_mm - (gap_top + gap_bottom)
         return nil if avail_w <= 0 || avail_h <= 0
@@ -814,7 +826,7 @@ module FacadeCalculator
         end
 
       when :left_right
-        # Фасад лежить у площині Y-Z, товщина по X
+        # Площина Y-Z (працює і для площини w_mm=0, і для боксу), товщина t задається по осі X
         avail_w = d_mm - (gap_left + gap_right)
         avail_h = h_mm - (gap_top + gap_bottom)
         return nil if avail_w <= 0 || avail_h <= 0
@@ -832,7 +844,7 @@ module FacadeCalculator
             z0 = start_z + gap_bottom.mm
             z1 = z0 + avail_h.mm
             boxes << {
-              name: "Фасад бічний #{i + 1}",
+              name: "Фасад #{i + 1}",
               x0: x0, y0: y0, z0: z0, x1: x1, y1: y1, z1: z1,
               origin: [0.0, cur_y.mm, gap_bottom.mm],
               size_x: t.mm, size_y: fw.mm, size_z: avail_h.mm
@@ -852,7 +864,7 @@ module FacadeCalculator
             z0 = start_z + cur_z.mm
             z1 = z0 + fh.mm
             boxes << {
-              name: "Фасад бічний #{i + 1} (шухляда)",
+              name: "Фасад #{i + 1} (шухляда)",
               x0: x0, y0: y0, z0: z0, x1: x1, y1: y1, z1: z1,
               origin: [0.0, gap_left.mm, cur_z.mm],
               size_x: t.mm, size_y: avail_w.mm, size_z: fh.mm
@@ -862,30 +874,55 @@ module FacadeCalculator
         end
 
       when :horizontal
-        # Горизонтальна площина X-Y, розбивка по висоті (шухляди)
+        # Горизонтальна площина X-Y (h_mm=0), розбивка по X, товщина t по Z
         avail_w = w_mm - (gap_left + gap_right)
         avail_d = d_mm - (gap_top + gap_bottom)
-        avail_h = h_mm
-        return nil if avail_w <= 0 || avail_d <= 0 || avail_h <= 0
+        return nil if avail_w <= 0 || avail_d <= 0
 
-        heights = calculate_segment_sizes(avail_h, n, gap_between, fixed_sizes)
-        return nil unless heights
-        cur_z = 0.0
+        widths = calculate_segment_sizes(avail_w, n, gap_between, fixed_sizes)
+        return nil unless widths
+        cur_x = gap_left
         n.times do |i|
-          fh = heights[i]
+          fw = widths[i]
+          x0 = start_x + cur_x.mm
+          x1 = x0 + fw.mm
+          y0 = start_y + gap_bottom.mm
+          y1 = y0 + avail_d.mm
+          z0 = start_z
+          z1 = z0 + t.mm
+          boxes << {
+            name: "Фасад #{i + 1}",
+            x0: x0, y0: y0, z0: z0, x1: x1, y1: y1, z1: z1,
+            origin: [cur_x.mm, gap_bottom.mm, 0.0],
+            size_x: fw.mm, size_y: avail_d.mm, size_z: t.mm
+          }
+          cur_x += fw + gap_between
+        end
+
+      when :horizontal_y
+        # Горизонтальна площина X-Y (h_mm=0), розбивка по Y, товщина t по Z
+        avail_w = w_mm - (gap_left + gap_right)
+        avail_d = d_mm - (gap_top + gap_bottom)
+        return nil if avail_w <= 0 || avail_d <= 0
+
+        depths = calculate_segment_sizes(avail_d, n, gap_between, fixed_sizes)
+        return nil unless depths
+        cur_y = gap_bottom
+        n.times do |i|
+          fd = depths[i]
           x0 = start_x + gap_left.mm
           x1 = x0 + avail_w.mm
-          y0 = start_y + gap_top.mm
-          y1 = y0 + avail_d.mm
-          z0 = start_z + cur_z.mm
-          z1 = z0 + fh.mm
+          y0 = start_y + cur_y.mm
+          y1 = y0 + fd.mm
+          z0 = start_z
+          z1 = z0 + t.mm
           boxes << {
-            name: "Фасад #{i + 1} (шухляда)",
+            name: "Фасад #{i + 1}",
             x0: x0, y0: y0, z0: z0, x1: x1, y1: y1, z1: z1,
-            origin: [gap_left.mm, gap_top.mm, cur_z.mm],
-            size_x: avail_w.mm, size_y: avail_d.mm, size_z: fh.mm
+            origin: [gap_left.mm, cur_y.mm, 0.0],
+            size_x: avail_w.mm, size_y: fd.mm, size_z: t.mm
           }
-          cur_z += fh + gap_between
+          cur_y += fd + gap_between
         end
       end
 
@@ -974,9 +1011,9 @@ module FacadeCalculator
     def send_init_data
       return unless @dialog
       payload = {
-        face_label: @selected_face_info[:label],
-        direction: @selected_face_info[:direction],
-        direction_label: direction_label(@selected_face_info[:direction]),
+        axis_label: @selected_edge_info[:axis_label],
+        direction: @selected_edge_info[:direction],
+        direction_label: direction_label(@selected_edge_info[:direction]),
         width: @dims_mm[:width].round(2),
         depth: @dims_mm[:depth].round(2),
         height: @dims_mm[:height].round(2),
@@ -1224,9 +1261,9 @@ module FacadeCalculator
             }
 
             function initDialog(data) {
-              document.getElementById('dirBadge').textContent = data.face_label + ' • ' + data.direction_label;
+              document.getElementById('dirBadge').textContent = data.axis_label + ' • ' + data.direction_label;
               document.getElementById('boxDims').textContent =
-                'Бокс: ' + data.width + ' × ' + data.depth + ' × ' + data.height + ' мм';
+                'Основа: ' + data.width + ' × ' + data.depth + ' × ' + data.height + ' мм';
               document.getElementById('thickness').value = data.thickness;
               document.getElementById('num_facades').value = data.num_facades;
               document.getElementById('gap_between').value = data.gap_between;
@@ -1267,7 +1304,7 @@ module FacadeCalculator
     selection = model.selection
 
     if selection.length != 1 || !selection[0].is_a?(Sketchup::Group)
-      UI.messagebox("⚠️ Будь ласка, виділіть один бокс-проріз (групу) у проєкті, а потім натискайте кнопку!")
+      UI.messagebox("⚠️ Будь ласка, виділіть один бокс або площину прорізу (групу) у проєкті!")
       return
     end
 
@@ -1278,7 +1315,7 @@ module FacadeCalculator
       height: (bb.max.z - bb.min.z).to_mm.to_f
     }
 
-    tool = FacadeFaceTool.new(selection[0], dims_mm)
+    tool = FacadeEdgeTool.new(selection[0], dims_mm)
     model.select_tool(tool)
   end
 end
@@ -1300,7 +1337,7 @@ unless file_loaded?(__FILE__)
   shelf_cmd.large_icon = s24 if File.exist?(s24)
 
   facade_cmd = UI::Command.new("Калькулятор фасадів (3D)") { FacadeCalculator.calculate }
-  facade_cmd.tooltip = "Обрати грань боксу та налаштувати фасади"
+  facade_cmd.tooltip = "Обрати ребро боксу або площини та налаштувати фасади"
   f16 = File.join(path, "images", "facade_16.png")
   f24 = File.join(path, "images", "facade_24.png")
   facade_cmd.small_icon = f16 if File.exist?(f16)
