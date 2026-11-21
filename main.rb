@@ -6,7 +6,7 @@ require 'sketchup'
 require 'extensions'
 
 module FurnitureTools
-  VERSION = "1.0.5" unless const_defined?(:VERSION)
+  VERSION = "1.0.8" unless const_defined?(:VERSION)
   REMOTE_BASE_URL = "https://raw.githubusercontent.com/byurii94/furniture-tools/main" unless const_defined?(:REMOTE_BASE_URL)
 
   def self.parse_float(val)
@@ -17,6 +17,11 @@ module FurnitureTools
   def self.parse_int(val)
     return val.to_i if val.is_a?(Numeric)
     val.to_s.tr(',', '.').to_i
+  end
+
+  def self.resolve_item_name(custom_name, default_name)
+    cleaned = custom_name.to_s.strip
+    cleaned.empty? ? default_name : cleaned
   end
 
   def self.version_newer?(remote, local)
@@ -97,6 +102,368 @@ module FurnitureTools
       end
     end
   end
+
+  # Єдиний інтерфейс у стилі вікна фасадів для обох інструментів (mode: "shelves" | "facades")
+  def self.build_dialog_html
+    <<~HTML
+      <!DOCTYPE html>
+      <html lang="uk">
+      <head>
+        <meta charset="UTF-8">
+        <style>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            font-size: 13px;
+            margin: 12px;
+            color: #1f2937;
+            background: #f9fafb;
+          }
+          .card {
+            background: #fff;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 10px 12px;
+            margin-bottom: 10px;
+          }
+          .badge {
+            display: inline-block;
+            background: #eff6ff;
+            color: #1d4ed8;
+            border: 1px solid #bfdbfe;
+            border-radius: 6px;
+            padding: 4px 8px;
+            font-weight: 600;
+            margin-bottom: 6px;
+          }
+          .meta {
+            font-size: 12px;
+            color: #4b5563;
+          }
+          .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+          }
+          label {
+            display: block;
+            font-size: 11px;
+            color: #374151;
+            margin-bottom: 3px;
+            font-weight: 600;
+          }
+          input[type="number"], input[type="text"] {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 6px 8px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            font-size: 13px;
+          }
+          .row-facade {
+            display: grid;
+            grid-template-columns: 78px 1fr 1.2fr;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 6px;
+          }
+          .row-shelf-gap {
+            display: grid;
+            grid-template-columns: 96px 1fr;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 6px;
+          }
+          .row-shelf-name {
+            display: grid;
+            grid-template-columns: 96px 1fr;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 6px;
+          }
+          .row-label {
+            font-size: 12px;
+            font-weight: 600;
+            white-space: nowrap;
+          }
+          .hint {
+            font-size: 11px;
+            color: #6b7280;
+            margin-top: 4px;
+          }
+          .hidden {
+            display: none;
+          }
+          .btn-apply {
+            width: 100%;
+            padding: 9px 12px;
+            background: #2563eb;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+          }
+          .btn-apply:hover {
+            background: #1d4ed8;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <div class="badge" id="dirBadge">Напрямок</div>
+          <div class="meta" id="boxDims">Основа: —</div>
+        </div>
+
+        <div class="card">
+          <div class="grid-2">
+            <div>
+              <label id="lblThickness">Товщина (мм)</label>
+              <input type="number" id="thickness" step="0.5" min="1" value="18">
+            </div>
+            <div>
+              <label id="lblCount">Кількість (шт.)</label>
+              <input type="number" id="num_items" step="1" min="1" max="30" value="3">
+            </div>
+          </div>
+
+          <div class="grid-2 hidden" id="facadeGapsGrid" style="margin-top: 8px;">
+            <div>
+              <label>Між фасадами (мм)</label>
+              <input type="number" id="gap_between" step="0.5" min="0" value="3">
+            </div>
+            <div>
+              <label>Зліва / спереду (мм)</label>
+              <input type="number" id="gap_left" step="0.5" min="0" value="2">
+            </div>
+            <div>
+              <label>Справа / ззаду (мм)</label>
+              <input type="number" id="gap_right" step="0.5" min="0" value="2">
+            </div>
+            <div>
+              <label>Зверху (мм)</label>
+              <input type="number" id="gap_top" step="0.5" min="0" value="2">
+            </div>
+            <div>
+              <label>Знизу (мм)</label>
+              <input type="number" id="gap_bottom" step="0.5" min="0" value="2">
+            </div>
+          </div>
+        </div>
+
+        <div class="card hidden" id="shelfGapsCard">
+          <label>Проміжки між полицями / краями (мм)</label>
+          <div id="shelfGapsContainer"></div>
+        </div>
+
+        <div class="card">
+          <label id="itemsCardLabel">Розміри та назви елементів</label>
+          <div id="itemsContainer"></div>
+          <div class="hint" id="itemsHint">Якщо назву не вводити, залишиться стандартна назва.</div>
+        </div>
+
+        <button class="btn-apply" id="applyBtn">Створити</button>
+
+        <script>
+          let currentMode = 'facades';
+          let currentFixed = [];
+          let currentGaps = [];
+          let currentNames = [];
+
+          function notifyRuby(action, payloadObj) {
+            window.location = 'skp:' + action + '@' + encodeURIComponent(JSON.stringify(payloadObj));
+          }
+
+          function buildPayload() {
+            const count = Math.max(1, parseInt(document.getElementById('num_items').value, 10) || 1);
+            const names = Array.from(document.querySelectorAll('.name-input')).map((el) => el.value);
+            currentNames = names;
+
+            if (currentMode === 'facades') {
+              const fixedInputs = document.querySelectorAll('.fixed-input');
+              const fixedSizes = [];
+              for (let i = 0; i < count; i++) {
+                const rawFixed = fixedInputs[i] ? fixedInputs[i].value.trim() : '';
+                fixedSizes.push(rawFixed === '' ? null : parseFloat(rawFixed));
+              }
+              currentFixed = fixedSizes;
+
+              return {
+                thickness: parseFloat(document.getElementById('thickness').value) || 18,
+                num_facades: count,
+                gap_between: parseFloat(document.getElementById('gap_between').value) || 0,
+                gap_left: parseFloat(document.getElementById('gap_left').value) || 0,
+                gap_right: parseFloat(document.getElementById('gap_right').value) || 0,
+                gap_top: parseFloat(document.getElementById('gap_top').value) || 0,
+                gap_bottom: parseFloat(document.getElementById('gap_bottom').value) || 0,
+                fixed_sizes: fixedSizes,
+                custom_names: names
+              };
+            } else {
+              const gapInputs = document.querySelectorAll('.shelf-gap-input');
+              const gaps = [];
+              for (let i = 0; i < count + 1; i++) {
+                gaps.push(parseFloat(gapInputs[i] ? gapInputs[i].value : 0) || 0);
+              }
+              currentGaps = gaps;
+
+              return {
+                thickness: parseFloat(document.getElementById('thickness').value) || 18,
+                num_items: count,
+                gaps: gaps,
+                custom_names: names
+              };
+            }
+          }
+
+          function renderShelfGaps(count, gapsArr) {
+            const container = document.getElementById('shelfGapsContainer');
+            container.innerHTML = '';
+            for (let i = 0; i < count + 1; i++) {
+              const row = document.createElement('div');
+              row.className = 'row-shelf-gap';
+
+              const lbl = document.createElement('span');
+              lbl.className = 'row-label';
+              lbl.textContent = 'Проміжок ' + (i + 1) + ':';
+
+              const inp = document.createElement('input');
+              inp.type = 'number';
+              inp.step = '0.5';
+              inp.min = '0';
+              inp.className = 'shelf-gap-input';
+              inp.value = (gapsArr && gapsArr[i] !== undefined) ? gapsArr[i] : 0;
+              inp.addEventListener('input', () => notifyRuby('update_params', buildPayload()));
+
+              row.appendChild(lbl);
+              row.appendChild(inp);
+              container.appendChild(row);
+            }
+          }
+
+          function renderItems(mode, count, fixedArr, namesArr) {
+            const container = document.getElementById('itemsContainer');
+            container.innerHTML = '';
+
+            for (let i = 0; i < count; i++) {
+              const row = document.createElement('div');
+              row.className = mode === 'facades' ? 'row-facade' : 'row-shelf-name';
+
+              const lbl = document.createElement('span');
+              lbl.className = 'row-label';
+              lbl.textContent = (mode === 'facades' ? 'Фасад ' : 'Елемент ') + (i + 1) + ':';
+
+              const nameInp = document.createElement('input');
+              nameInp.type = 'text';
+              nameInp.placeholder = 'Назва (авто)';
+              nameInp.className = 'name-input';
+              if (namesArr && namesArr[i] !== null && namesArr[i] !== undefined) {
+                nameInp.value = namesArr[i];
+              }
+              nameInp.addEventListener('input', () => notifyRuby('update_params', buildPayload()));
+
+              row.appendChild(lbl);
+
+              if (mode === 'facades') {
+                const fixedInp = document.createElement('input');
+                fixedInp.type = 'number';
+                fixedInp.step = '0.1';
+                fixedInp.min = '1';
+                fixedInp.placeholder = 'Авто мм';
+                fixedInp.className = 'fixed-input';
+                if (fixedArr && fixedArr[i] !== null && fixedArr[i] !== undefined) {
+                  fixedInp.value = fixedArr[i];
+                }
+                fixedInp.addEventListener('input', () => notifyRuby('update_params', buildPayload()));
+                row.appendChild(fixedInp);
+              }
+
+              row.appendChild(nameInp);
+              container.appendChild(row);
+            }
+          }
+
+          function initDialog(data) {
+            currentMode = data.mode || 'facades';
+
+            if (currentMode === 'facades') {
+              document.getElementById('dirBadge').textContent = data.axis_label + ' • ' + data.direction_label;
+              document.getElementById('boxDims').textContent =
+                'Основа: ' + data.width + ' × ' + data.depth + ' × ' + data.height + ' мм';
+              document.getElementById('lblThickness').textContent = 'Товщина фасаду (мм)';
+              document.getElementById('lblCount').textContent = 'Кількість фасадів (шт.)';
+              document.getElementById('facadeGapsGrid').classList.remove('hidden');
+              document.getElementById('shelfGapsCard').classList.add('hidden');
+              document.getElementById('itemsCardLabel').textContent =
+                'Фіксовані розміри (мм, пусто = авто) та свої назви (пусто = стандарт)';
+              document.getElementById('itemsHint').textContent =
+                'Якщо вказати розмір для частини фасадів, залишок розподілиться порівну; порожня назва = стандартна.';
+              document.getElementById('applyBtn').textContent = 'Створити фасади';
+
+              document.getElementById('thickness').value = data.thickness;
+              document.getElementById('num_items').value = data.num_facades;
+              document.getElementById('gap_between').value = data.gap_between;
+              document.getElementById('gap_left').value = data.gap_left;
+              document.getElementById('gap_right').value = data.gap_right;
+              document.getElementById('gap_top').value = data.gap_top;
+              document.getElementById('gap_bottom').value = data.gap_bottom;
+
+              currentFixed = data.fixed_sizes || [];
+              currentNames = data.custom_names || [];
+              renderItems('facades', data.num_facades, currentFixed, currentNames);
+            } else {
+              document.getElementById('dirBadge').textContent = data.axis_label;
+              document.getElementById('boxDims').textContent =
+                'Ніша: ' + data.width + ' × ' + data.depth + ' × ' + data.height + ' мм (вісь: ' + data.axis_length + ' мм)';
+              document.getElementById('lblThickness').textContent = 'Товщина матеріалу (мм)';
+              document.getElementById('lblCount').textContent = 'Кількість елементів (шт.)';
+              document.getElementById('facadeGapsGrid').classList.add('hidden');
+              document.getElementById('shelfGapsCard').classList.remove('hidden');
+              document.getElementById('itemsCardLabel').textContent =
+                'Свої назви полиць / перегородок (пусто = стандарт)';
+              document.getElementById('itemsHint').textContent =
+                'Якщо назву не вводити, буде використано стандартну назву («Полиця 1» або «Перегородка 1»).';
+              document.getElementById('applyBtn').textContent = 'Створити полиці / перегородки';
+
+              document.getElementById('thickness').value = data.thickness;
+              document.getElementById('num_items').value = data.num_items;
+
+              currentGaps = data.gaps || [];
+              currentNames = data.custom_names || [];
+              renderShelfGaps(data.num_items, currentGaps);
+              renderItems('shelves', data.num_items, [], currentNames);
+            }
+          }
+
+          ['thickness', 'num_items', 'gap_between', 'gap_left', 'gap_right', 'gap_top', 'gap_bottom'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.addEventListener('input', () => {
+              if (id === 'num_items') {
+                const count = Math.max(1, parseInt(el.value, 10) || 1);
+                if (currentMode === 'facades') {
+                  renderItems('facades', count, currentFixed, currentNames);
+                } else {
+                  renderShelfGaps(count, currentGaps);
+                  renderItems('shelves', count, [], currentNames);
+                }
+              }
+              notifyRuby('update_params', buildPayload());
+            });
+          });
+
+          document.getElementById('applyBtn').addEventListener('click', () => {
+            notifyRuby('apply', buildPayload());
+          });
+
+          document.addEventListener('DOMContentLoaded', () => {
+            window.location = 'skp:ready@';
+          });
+        </script>
+      </body>
+      </html>
+    HTML
+  end
 end
 
 module ShelfCalculator
@@ -114,7 +481,8 @@ module ShelfCalculator
       @prev_transparency = nil
       @params = {
         thickness: 18.0,
-        num_items: 4
+        num_items: 4,
+        custom_names: Array.new(4, "")
       }
     end
 
@@ -183,7 +551,8 @@ module ShelfCalculator
       @selected_axis = @hover_axis
       @params = {
         thickness: 18.0,
-        num_items: 4
+        num_items: 4,
+        custom_names: Array.new(4, "")
       }
       @gaps_mm = default_equal_gaps(axis_length_mm(@selected_axis), @params[:num_items], @params[:thickness])
       open_dialog
@@ -338,35 +707,27 @@ module ShelfCalculator
 
       @dialog = UI::HtmlDialog.new(
         dialog_title: "Параметри полиць",
-        preferences_key: "ShelfCalculatorDialog",
+        preferences_key: "FurnitureToolsDialog",
         scrollable: true,
         resizable: true,
-        width: 390,
-        height: 560,
+        width: 440,
+        height: 680,
         style: UI::HtmlDialog::STYLE_DIALOG
       )
 
-      html_path = File.join(File.dirname(__FILE__), "dialog.html")
-      @dialog.set_file(html_path)
+      @dialog.set_html(FurnitureTools.build_dialog_html)
 
       @dialog.add_action_callback("ready") do |_ctx|
         send_init_data
       end
 
       @dialog.add_action_callback("update_params") do |_ctx, json_str|
-        data = JSON.parse(json_str)
-        @params[:thickness] = FurnitureTools.parse_float(data["thickness"])
-        @params[:num_items] = FurnitureTools.parse_int(data["num_items"])
-        @gaps_mm = Array(data["gaps"]).map { |g| FurnitureTools.parse_float(g) }
-        Sketchup.active_model.active_view.invalidate
+        apply_data_from_js(json_str)
+        Sketchup.active_model.active_view&.invalidate
       end
 
       @dialog.add_action_callback("apply") do |_ctx, json_str|
-        data = JSON.parse(json_str)
-        @params[:thickness] = FurnitureTools.parse_float(data["thickness"])
-        @params[:num_items] = FurnitureTools.parse_int(data["num_items"])
-        @gaps_mm = Array(data["gaps"]).map { |g| FurnitureTools.parse_float(g) }
-
+        apply_data_from_js(json_str)
         if generate_shelves
           close_dialog
           Sketchup.active_model.select_tool(nil)
@@ -383,9 +744,21 @@ module ShelfCalculator
       @dialog.show
     end
 
+    def apply_data_from_js(json_str)
+      data = JSON.parse(json_str)
+      n = [FurnitureTools.parse_int(data["num_items"]), 1].max
+      @params[:thickness] = FurnitureTools.parse_float(data["thickness"])
+      @params[:num_items] = n
+      @gaps_mm = Array(data["gaps"]).map { |g| FurnitureTools.parse_float(g) }
+
+      raw_names = Array(data["custom_names"])
+      @params[:custom_names] = Array.new(n) { |i| raw_names[i].to_s }
+    end
+
     def send_init_data
       return unless @dialog
       payload = {
+        mode: "shelves",
         axis: @selected_axis.to_s,
         axis_label: axis_label(@selected_axis),
         axis_length: axis_length_mm(@selected_axis).round(2),
@@ -394,7 +767,8 @@ module ShelfCalculator
         height: @dims_mm[:height].round(2),
         thickness: @params[:thickness],
         num_items: @params[:num_items],
-        gaps: @gaps_mm
+        gaps: @gaps_mm,
+        custom_names: @params[:custom_names]
       }
       @dialog.execute_script("initDialog(#{payload.to_json});")
     end
@@ -421,6 +795,7 @@ module ShelfCalculator
       h_mm = @dims_mm[:height]
       t_mm = @params[:thickness]
       n    = @params[:num_items]
+      custom_names = @params[:custom_names] || []
 
       start_x = @bb.min.x
       start_y = @bb.min.y
@@ -433,7 +808,7 @@ module ShelfCalculator
         cursor_z = @gaps_mm[0]
         n.times do |i|
           shelf_group = entities.add_group
-          shelf_group.name = "Полиця #{i + 1}"
+          shelf_group.name = FurnitureTools.resolve_item_name(custom_names[i], "Полиця #{i + 1}")
           shelf_group.transformation = Geom::Transformation.translation([start_x, start_y, start_z + cursor_z.mm])
 
           face = shelf_group.entities.add_face([0, 0, 0], [w_mm.mm, 0, 0], [w_mm.mm, d_mm.mm, 0], [0, d_mm.mm, 0])
@@ -447,7 +822,7 @@ module ShelfCalculator
         cursor_x = @gaps_mm[0]
         n.times do |i|
           part_group = entities.add_group
-          part_group.name = "Перегородка #{i + 1}"
+          part_group.name = FurnitureTools.resolve_item_name(custom_names[i], "Перегородка #{i + 1}")
           part_group.transformation = Geom::Transformation.translation([start_x + cursor_x.mm, start_y, start_z])
 
           face = part_group.entities.add_face([0, 0, 0], [t_mm.mm, 0, 0], [t_mm.mm, d_mm.mm, 0], [0, d_mm.mm, 0])
@@ -461,7 +836,7 @@ module ShelfCalculator
         cursor_y = @gaps_mm[0]
         n.times do |i|
           part_group = entities.add_group
-          part_group.name = "Перегородка #{i + 1}"
+          part_group.name = FurnitureTools.resolve_item_name(custom_names[i], "Перегородка #{i + 1}")
           part_group.transformation = Geom::Transformation.translation([start_x, start_y + cursor_y.mm, start_z])
 
           face = part_group.entities.add_face([0, 0, 0], [w_mm.mm, 0, 0], [w_mm.mm, t_mm.mm, 0], [0, t_mm.mm, 0])
@@ -519,7 +894,8 @@ module FacadeCalculator
         gap_right: 2.0,
         gap_top: 2.0,
         gap_bottom: 2.0,
-        fixed_sizes: [nil, nil, nil]
+        fixed_sizes: [nil, nil, nil],
+        custom_names: Array.new(3, "")
       }
     end
 
@@ -579,7 +955,7 @@ module FacadeCalculator
       return unless @hover_edge_info
 
       @selected_edge_info = @hover_edge_info
-      normalize_fixed_sizes!
+      normalize_item_arrays!
       open_dialog
       view.invalidate
     end
@@ -620,10 +996,6 @@ module FacadeCalculator
       group.entities.grep(Sketchup::Edge).include?(edge)
     end
 
-    # Аналізує вибране ребро:
-    # - Вертикальне ребро (Z) -> розбивка по висоті (шухляди)
-    # - Горизонтальне ребро (X або Y) -> розбивка по ширині (дверцята) вздовж цієї осі
-    # Підтримує як площину в групі (один габарит ~ 0), так і повноцінний бокс.
     def analyze_edge(edge, group)
       tr = group.transformation
       p1 = edge.start.position.transform(tr)
@@ -640,7 +1012,6 @@ module FacadeCalculator
       d_mm = @dims_mm[:depth]
       h_mm = @dims_mm[:height]
 
-      # Визначаємо площину фасаду (:front_back — площина X-Z, товщина по Y; :left_right — площина Y-Z, товщина по X)
       plane = if d_mm < 0.5
                 :front_back
               elsif w_mm < 0.5
@@ -652,7 +1023,6 @@ module FacadeCalculator
               end
 
       if az >= ax && az >= ay
-        # Вертикальне ребро -> розбивка по висоті (шухляди)
         {
           axis: :z,
           axis_label: "ВИСОТА (Z)",
@@ -661,7 +1031,6 @@ module FacadeCalculator
           edge_pts: [p1, p2]
         }
       elsif ax >= ay && ax >= az
-        # Горизонтальне ребро вздовж X -> розбивка по ширині вздовж X
         p_use = (plane == :horizontal) ? :horizontal : :front_back
         {
           axis: :x,
@@ -671,7 +1040,6 @@ module FacadeCalculator
           edge_pts: [p1, p2]
         }
       else
-        # Горизонтальне ребро вздовж Y -> розбивка по ширині вздовж Y (або глибині на горизонтальній площині)
         p_use = (plane == :horizontal) ? :horizontal_y : :left_right
         {
           axis: :y,
@@ -687,19 +1055,22 @@ module FacadeCalculator
       dir == "Height" ? "ПО ВИСОТІ (Шухляди)" : "ПО ШИРИНІ (Дверцята)"
     end
 
-    def normalize_fixed_sizes!
+    def normalize_item_arrays!
       n = [@params[:num_facades].to_i, 1].max
       @params[:num_facades] = n
-      arr = Array(@params[:fixed_sizes])
+
+      arr_fixed = Array(@params[:fixed_sizes])
       @params[:fixed_sizes] = Array.new(n) do |i|
-        val = arr[i]
+        val = arr_fixed[i]
         next nil if val.nil?
         f = FurnitureTools.parse_float(val)
         f > 0 ? f : nil
       end
+
+      arr_names = Array(@params[:custom_names])
+      @params[:custom_names] = Array.new(n) { |i| arr_names[i].to_s }
     end
 
-    # Розраховує довжини кожного фасаду (в мм) з урахуванням фіксованих розмірів і залишку порівну
     def calculate_segment_sizes(total_available_mm, num_facades, gap_between_mm, fixed_sizes)
       return nil if num_facades <= 0
       total_gaps = (num_facades - 1) * gap_between_mm
@@ -762,6 +1133,7 @@ module FacadeCalculator
       gap_top     = @params[:gap_top].to_f
       gap_bottom  = @params[:gap_bottom].to_f
       fixed_sizes = @params[:fixed_sizes] || []
+      custom_names = @params[:custom_names] || []
 
       w_mm = @dims_mm[:width]
       d_mm = @dims_mm[:depth]
@@ -778,7 +1150,6 @@ module FacadeCalculator
 
       case plane
       when :front_back
-        # Площина X-Z (працює і для площини d_mm=0, і для боксу), товщина t задається по осі Y
         avail_w = w_mm - (gap_left + gap_right)
         avail_h = h_mm - (gap_top + gap_bottom)
         return nil if avail_w <= 0 || avail_h <= 0
@@ -796,7 +1167,7 @@ module FacadeCalculator
             z0 = start_z + gap_bottom.mm
             z1 = z0 + avail_h.mm
             boxes << {
-              name: "Фасад #{i + 1}",
+              name: FurnitureTools.resolve_item_name(custom_names[i], "Фасад #{i + 1}"),
               x0: x0, y0: y0, z0: z0, x1: x1, y1: y1, z1: z1,
               origin: [cur_x.mm, 0.0, gap_bottom.mm],
               size_x: fw.mm, size_y: t.mm, size_z: avail_h.mm
@@ -816,7 +1187,7 @@ module FacadeCalculator
             z0 = start_z + cur_z.mm
             z1 = z0 + fh.mm
             boxes << {
-              name: "Фасад #{i + 1} (шухляда)",
+              name: FurnitureTools.resolve_item_name(custom_names[i], "Фасад #{i + 1} (шухляда)"),
               x0: x0, y0: y0, z0: z0, x1: x1, y1: y1, z1: z1,
               origin: [gap_left.mm, 0.0, cur_z.mm],
               size_x: avail_w.mm, size_y: t.mm, size_z: fh.mm
@@ -826,7 +1197,6 @@ module FacadeCalculator
         end
 
       when :left_right
-        # Площина Y-Z (працює і для площини w_mm=0, і для боксу), товщина t задається по осі X
         avail_w = d_mm - (gap_left + gap_right)
         avail_h = h_mm - (gap_top + gap_bottom)
         return nil if avail_w <= 0 || avail_h <= 0
@@ -844,7 +1214,7 @@ module FacadeCalculator
             z0 = start_z + gap_bottom.mm
             z1 = z0 + avail_h.mm
             boxes << {
-              name: "Фасад #{i + 1}",
+              name: FurnitureTools.resolve_item_name(custom_names[i], "Фасад #{i + 1}"),
               x0: x0, y0: y0, z0: z0, x1: x1, y1: y1, z1: z1,
               origin: [0.0, cur_y.mm, gap_bottom.mm],
               size_x: t.mm, size_y: fw.mm, size_z: avail_h.mm
@@ -864,7 +1234,7 @@ module FacadeCalculator
             z0 = start_z + cur_z.mm
             z1 = z0 + fh.mm
             boxes << {
-              name: "Фасад #{i + 1} (шухляда)",
+              name: FurnitureTools.resolve_item_name(custom_names[i], "Фасад #{i + 1} (шухляда)"),
               x0: x0, y0: y0, z0: z0, x1: x1, y1: y1, z1: z1,
               origin: [0.0, gap_left.mm, cur_z.mm],
               size_x: t.mm, size_y: avail_w.mm, size_z: fh.mm
@@ -874,7 +1244,6 @@ module FacadeCalculator
         end
 
       when :horizontal
-        # Горизонтальна площина X-Y (h_mm=0), розбивка по X, товщина t по Z
         avail_w = w_mm - (gap_left + gap_right)
         avail_d = d_mm - (gap_top + gap_bottom)
         return nil if avail_w <= 0 || avail_d <= 0
@@ -891,7 +1260,7 @@ module FacadeCalculator
           z0 = start_z
           z1 = z0 + t.mm
           boxes << {
-            name: "Фасад #{i + 1}",
+            name: FurnitureTools.resolve_item_name(custom_names[i], "Фасад #{i + 1}"),
             x0: x0, y0: y0, z0: z0, x1: x1, y1: y1, z1: z1,
             origin: [cur_x.mm, gap_bottom.mm, 0.0],
             size_x: fw.mm, size_y: avail_d.mm, size_z: t.mm
@@ -900,7 +1269,6 @@ module FacadeCalculator
         end
 
       when :horizontal_y
-        # Горизонтальна площина X-Y (h_mm=0), розбивка по Y, товщина t по Z
         avail_w = w_mm - (gap_left + gap_right)
         avail_d = d_mm - (gap_top + gap_bottom)
         return nil if avail_w <= 0 || avail_d <= 0
@@ -917,7 +1285,7 @@ module FacadeCalculator
           z0 = start_z
           z1 = z0 + t.mm
           boxes << {
-            name: "Фасад #{i + 1}",
+            name: FurnitureTools.resolve_item_name(custom_names[i], "Фасад #{i + 1}"),
             x0: x0, y0: y0, z0: z0, x1: x1, y1: y1, z1: z1,
             origin: [gap_left.mm, cur_y.mm, 0.0],
             size_x: avail_w.mm, size_y: fd.mm, size_z: t.mm
@@ -952,15 +1320,15 @@ module FacadeCalculator
 
       @dialog = UI::HtmlDialog.new(
         dialog_title: "Параметри фасадів",
-        preferences_key: "FacadeCalculatorDialog",
+        preferences_key: "FurnitureToolsDialog",
         scrollable: true,
         resizable: true,
-        width: 420,
-        height: 640,
+        width: 440,
+        height: 700,
         style: UI::HtmlDialog::STYLE_DIALOG
       )
 
-      @dialog.set_html(build_dialog_html)
+      @dialog.set_html(FurnitureTools.build_dialog_html)
 
       @dialog.add_action_callback("ready") do |_ctx|
         send_init_data
@@ -991,8 +1359,9 @@ module FacadeCalculator
 
     def apply_data_from_js(json_str)
       data = JSON.parse(json_str)
+      n = [FurnitureTools.parse_int(data["num_facades"]), 1].max
       @params[:thickness]   = FurnitureTools.parse_float(data["thickness"])
-      @params[:num_facades] = [FurnitureTools.parse_int(data["num_facades"]), 1].max
+      @params[:num_facades] = n
       @params[:gap_between] = FurnitureTools.parse_float(data["gap_between"])
       @params[:gap_left]    = FurnitureTools.parse_float(data["gap_left"])
       @params[:gap_right]   = FurnitureTools.parse_float(data["gap_right"])
@@ -1000,17 +1369,21 @@ module FacadeCalculator
       @params[:gap_bottom]  = FurnitureTools.parse_float(data["gap_bottom"])
 
       raw_fixed = Array(data["fixed_sizes"])
-      @params[:fixed_sizes] = Array.new(@params[:num_facades]) do |i|
+      @params[:fixed_sizes] = Array.new(n) do |i|
         v = raw_fixed[i]
         next nil if v.nil? || v.to_s.strip.empty?
         num = FurnitureTools.parse_float(v)
         num > 0.0 ? num : nil
       end
+
+      raw_names = Array(data["custom_names"])
+      @params[:custom_names] = Array.new(n) { |i| raw_names[i].to_s }
     end
 
     def send_init_data
       return unless @dialog
       payload = {
+        mode: "facades",
         axis_label: @selected_edge_info[:axis_label],
         direction: @selected_edge_info[:direction],
         direction_label: direction_label(@selected_edge_info[:direction]),
@@ -1024,7 +1397,8 @@ module FacadeCalculator
         gap_right: @params[:gap_right],
         gap_top: @params[:gap_top],
         gap_bottom: @params[:gap_bottom],
-        fixed_sizes: @params[:fixed_sizes]
+        fixed_sizes: @params[:fixed_sizes],
+        custom_names: @params[:custom_names]
       }
       @dialog.execute_script("initDialog(#{payload.to_json});")
     end
@@ -1071,231 +1445,6 @@ module FacadeCalculator
       model.commit_operation
       @generated = true
       true
-    end
-
-    def build_dialog_html
-      <<~HTML
-        <!DOCTYPE html>
-        <html lang="uk">
-        <head>
-          <meta charset="UTF-8">
-          <style>
-            body {
-              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-              font-size: 13px;
-              margin: 12px;
-              color: #1f2937;
-              background: #f9fafb;
-            }
-            .card {
-              background: #fff;
-              border: 1px solid #e5e7eb;
-              border-radius: 8px;
-              padding: 10px 12px;
-              margin-bottom: 10px;
-            }
-            .badge {
-              display: inline-block;
-              background: #eff6ff;
-              color: #1d4ed8;
-              border: 1px solid #bfdbfe;
-              border-radius: 6px;
-              padding: 4px 8px;
-              font-weight: 600;
-              margin-bottom: 6px;
-            }
-            .meta {
-              font-size: 12px;
-              color: #4b5563;
-            }
-            .grid-2 {
-              display: grid;
-              grid-template-columns: 1fr 1fr;
-              gap: 8px;
-            }
-            label {
-              display: block;
-              font-size: 11px;
-              color: #374151;
-              margin-bottom: 3px;
-              font-weight: 600;
-            }
-            input[type="number"] {
-              width: 100%;
-              box-sizing: border-box;
-              padding: 6px 8px;
-              border: 1px solid #d1d5db;
-              border-radius: 6px;
-              font-size: 13px;
-            }
-            .fixed-row {
-              display: flex;
-              align-items: center;
-              gap: 8px;
-              margin-bottom: 6px;
-            }
-            .fixed-row span {
-              min-width: 72px;
-              font-size: 12px;
-              font-weight: 600;
-            }
-            .fixed-row input {
-              flex: 1;
-            }
-            .hint {
-              font-size: 11px;
-              color: #6b7280;
-              margin-top: 4px;
-            }
-            .btn-apply {
-              width: 100%;
-              padding: 9px 12px;
-              background: #2563eb;
-              color: #fff;
-              border: none;
-              border-radius: 8px;
-              font-size: 14px;
-              font-weight: 600;
-              cursor: pointer;
-            }
-            .btn-apply:hover {
-              background: #1d4ed8;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="card">
-            <div class="badge" id="dirBadge">Напрямок</div>
-            <div class="meta" id="boxDims">Проріз: —</div>
-          </div>
-
-          <div class="card">
-            <div class="grid-2">
-              <div>
-                <label>Товщина фасаду (мм)</label>
-                <input type="number" id="thickness" step="0.5" min="1" value="18">
-              </div>
-              <div>
-                <label>Кількість фасадів (шт.)</label>
-                <input type="number" id="num_facades" step="1" min="1" max="30" value="3">
-              </div>
-              <div>
-                <label>Між фасадами (мм)</label>
-                <input type="number" id="gap_between" step="0.5" min="0" value="3">
-              </div>
-              <div>
-                <label>Зліва / спереду (мм)</label>
-                <input type="number" id="gap_left" step="0.5" min="0" value="2">
-              </div>
-              <div>
-                <label>Справа / ззаду (мм)</label>
-                <input type="number" id="gap_right" step="0.5" min="0" value="2">
-              </div>
-              <div>
-                <label>Зверху (мм)</label>
-                <input type="number" id="gap_top" step="0.5" min="0" value="2">
-              </div>
-              <div>
-                <label>Знизу (мм)</label>
-                <input type="number" id="gap_bottom" step="0.5" min="0" value="2">
-              </div>
-            </div>
-          </div>
-
-          <div class="card">
-            <label>Фіксовані розміри окремих фасадів (мм, порожньо = авто)</label>
-            <div id="fixedContainer"></div>
-            <div class="hint">Якщо вказати розмір для частини фасадів, залишок розподілиться порівну між іншими.</div>
-          </div>
-
-          <button class="btn-apply" id="applyBtn">Створити фасади</button>
-
-          <script>
-            let currentFixed = [];
-
-            function collectPayload() {
-              const count = Math.max(1, parseInt(document.getElementById('num_facades').value, 10) || 1);
-              const fixedInputs = document.querySelectorAll('.fixed-input');
-              const fixedSizes = [];
-              for (let i = 0; i < count; i++) {
-                const raw = fixedInputs[i] ? fixedInputs[i].value.trim() : '';
-                fixedSizes.push(raw === '' ? null : parseFloat(raw));
-              }
-              currentFixed = fixedSizes;
-              return JSON.stringify({
-                thickness: parseFloat(document.getElementById('thickness').value) || 18,
-                num_facades: count,
-                gap_between: parseFloat(document.getElementById('gap_between').value) || 0,
-                gap_left: parseFloat(document.getElementById('gap_left').value) || 0,
-                gap_right: parseFloat(document.getElementById('gap_right').value) || 0,
-                gap_top: parseFloat(document.getElementById('gap_top').value) || 0,
-                gap_bottom: parseFloat(document.getElementById('gap_bottom').value) || 0,
-                fixed_sizes: fixedSizes
-              });
-            }
-
-            function renderFixedInputs(count, fixedArr) {
-              const container = document.getElementById('fixedContainer');
-              container.innerHTML = '';
-              for (let i = 0; i < count; i++) {
-                const row = document.createElement('div');
-                row.className = 'fixed-row';
-                const lbl = document.createElement('span');
-                lbl.textContent = 'Фасад ' + (i + 1) + ':';
-                const inp = document.createElement('input');
-                inp.type = 'number';
-                inp.step = '0.1';
-                inp.min = '1';
-                inp.placeholder = 'Авто';
-                inp.className = 'fixed-input';
-                if (fixedArr && fixedArr[i] !== null && fixedArr[i] !== undefined) {
-                  inp.value = fixedArr[i];
-                }
-                inp.addEventListener('input', () => {
-                  window.location = 'skp:update_params@' + encodeURIComponent(collectPayload());
-                });
-                row.appendChild(lbl);
-                row.appendChild(inp);
-                container.appendChild(row);
-              }
-            }
-
-            function initDialog(data) {
-              document.getElementById('dirBadge').textContent = data.axis_label + ' • ' + data.direction_label;
-              document.getElementById('boxDims').textContent =
-                'Основа: ' + data.width + ' × ' + data.depth + ' × ' + data.height + ' мм';
-              document.getElementById('thickness').value = data.thickness;
-              document.getElementById('num_facades').value = data.num_facades;
-              document.getElementById('gap_between').value = data.gap_between;
-              document.getElementById('gap_left').value = data.gap_left;
-              document.getElementById('gap_right').value = data.gap_right;
-              document.getElementById('gap_top').value = data.gap_top;
-              document.getElementById('gap_bottom').value = data.gap_bottom;
-              currentFixed = data.fixed_sizes || [];
-              renderFixedInputs(data.num_facades, currentFixed);
-            }
-
-            document.querySelectorAll('input').forEach((el) => {
-              el.addEventListener('input', () => {
-                if (el.id === 'num_facades') {
-                  const count = Math.max(1, parseInt(el.value, 10) || 1);
-                  renderFixedInputs(count, currentFixed);
-                }
-                window.location = 'skp:update_params@' + encodeURIComponent(collectPayload());
-              });
-            });
-
-            document.getElementById('applyBtn').addEventListener('click', () => {
-              window.location = 'skp:apply@' + encodeURIComponent(collectPayload());
-            });
-
-            document.addEventListener('DOMContentLoaded', () => {
-              window.location = 'skp:ready@';
-            });
-          </script>
-        </body>
-        </html>
-      HTML
     end
   end
 
