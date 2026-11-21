@@ -6,7 +6,7 @@ require 'sketchup'
 require 'extensions'
 
 module FurnitureTools
-  VERSION = "1.0.8" unless const_defined?(:VERSION)
+  VERSION = "1.0.9" unless const_defined?(:VERSION)
   REMOTE_BASE_URL = "https://raw.githubusercontent.com/byurii94/furniture-tools/main" unless const_defined?(:REMOTE_BASE_URL)
 
   def self.parse_float(val)
@@ -56,14 +56,12 @@ module FurnitureTools
     plugin_dir = File.dirname(__FILE__)
     files = [
       "main.rb",
-      "dialog.html",
       "images/shelf_16.png",
       "images/shelf_24.png",
       "images/facade_16.png",
       "images/facade_24.png"
     ]
     optional_files = [
-      "dialog.html",
       "images/shelf_16.png",
       "images/shelf_24.png",
       "images/facade_16.png",
@@ -168,7 +166,7 @@ module FurnitureTools
           }
           .row-shelf-gap {
             display: grid;
-            grid-template-columns: 96px 1fr;
+            grid-template-columns: 96px 1fr 78px;
             align-items: center;
             gap: 6px;
             margin-bottom: 6px;
@@ -185,9 +183,21 @@ module FurnitureTools
             font-weight: 600;
             white-space: nowrap;
           }
+          .calc-val {
+            font-size: 11px;
+            color: #4b5563;
+            text-align: right;
+            white-space: nowrap;
+          }
           .hint {
             font-size: 11px;
             color: #6b7280;
+            margin-top: 4px;
+          }
+          .error-text {
+            font-size: 11px;
+            color: #dc2626;
+            font-weight: 600;
             margin-top: 4px;
           }
           .hidden {
@@ -252,13 +262,15 @@ module FurnitureTools
         </div>
 
         <div class="card hidden" id="shelfGapsCard">
-          <label>Проміжки між полицями / краями (мм)</label>
+          <label>Проміжки (мм — порожнє = авто рівномірно, залишок після округлення в останній)</label>
           <div id="shelfGapsContainer"></div>
+          <div class="error-text hidden" id="shelfGapError"></div>
         </div>
 
         <div class="card">
           <label id="itemsCardLabel">Розміри та назви елементів</label>
           <div id="itemsContainer"></div>
+          <div class="error-text hidden" id="facadeSizeError"></div>
           <div class="hint" id="itemsHint">Якщо назву не вводити, залишиться стандартна назва.</div>
         </div>
 
@@ -266,16 +278,96 @@ module FurnitureTools
 
         <script>
           let currentMode = 'facades';
+          let axisLengthMm = 0;
           let currentFixed = [];
-          let currentGaps = [];
+          let currentRawGaps = [];
           let currentNames = [];
+
+          function round1(val) {
+            return Math.round(val * 10) / 10;
+          }
+
+          function parseNum(str) {
+            if (str === null || str === undefined) return NaN;
+            const cleaned = String(str).trim().replace(',', '.');
+            if (cleaned === '') return NaN;
+            return parseFloat(cleaned);
+          }
 
           function notifyRuby(action, payloadObj) {
             window.location = 'skp:' + action + '@' + encodeURIComponent(JSON.stringify(payloadObj));
           }
 
+          // Розрахунок проміжків полиць: порожнє = авто, округлення до 0.1, залишок на останній проміжок
+          function computeShelfGapsPreview(totalLen, count, thickness, rawInputs) {
+            const numGaps = count + 1;
+            const netSpan = totalLen - (count * thickness);
+            const fixedVals = new Array(numGaps).fill(null);
+            const autoIndices = [];
+            let fixedSum = 0;
+
+            for (let i = 0; i < numGaps; i++) {
+              const val = parseNum(rawInputs[i]);
+              if (!isNaN(val) && val >= 0) {
+                const r = round1(val);
+                fixedVals[i] = r;
+                fixedSum = round1(fixedSum + r);
+              } else {
+                autoIndices.push(i);
+              }
+            }
+
+            if (netSpan < -0.01) {
+              const fallback = fixedVals.map((v) => v !== null ? v : 0);
+              return { gaps: fallback, error: 'Товщина елементів перевищує розмір ніші.' };
+            }
+
+            if (autoIndices.length === 0) {
+              const allFixed = fixedVals.map((v) => v !== null ? v : 0);
+              const sumAll = allFixed.reduce((a, b) => a + b, 0);
+              if (sumAll > netSpan + 0.01) {
+                return {
+                  gaps: allFixed,
+                  error: 'Задані розміри (' + round1(sumAll) + ' мм) не вміщаються у вільний простір (' + round1(netSpan) + ' мм).'
+                };
+              }
+              return { gaps: allFixed, error: '' };
+            }
+
+            const remainder = netSpan - fixedSum;
+            if (remainder < -0.01) {
+              const fallback = fixedVals.map((v) => v !== null ? v : 0);
+              return {
+                gaps: fallback,
+                error: 'Сума фіксованих проміжків перевищує розмір ніші.'
+              };
+            }
+
+            const eachAuto = round1(Math.max(0, remainder) / autoIndices.length);
+            const result = new Array(numGaps).fill(0);
+            let sumBeforeLast = 0;
+            const lastAutoIdx = autoIndices[autoIndices.length - 1];
+
+            for (let i = 0; i < numGaps; i++) {
+              if (fixedVals[i] !== null) {
+                result[i] = fixedVals[i];
+              } else if (i !== lastAutoIdx) {
+                result[i] = eachAuto;
+              }
+              if (i !== lastAutoIdx) {
+                sumBeforeLast = round1(sumBeforeLast + result[i]);
+              }
+            }
+
+            const lastVal = round1(Math.max(0, netSpan - sumBeforeLast));
+            result[lastAutoIdx] = lastVal;
+
+            return { gaps: result, error: '' };
+          }
+
           function buildPayload() {
             const count = Math.max(1, parseInt(document.getElementById('num_items').value, 10) || 1);
+            const thickness = Math.max(0.1, parseNum(document.getElementById('thickness').value) || 18);
             const names = Array.from(document.querySelectorAll('.name-input')).map((el) => el.value);
             currentNames = names;
 
@@ -283,40 +375,58 @@ module FurnitureTools
               const fixedInputs = document.querySelectorAll('.fixed-input');
               const fixedSizes = [];
               for (let i = 0; i < count; i++) {
-                const rawFixed = fixedInputs[i] ? fixedInputs[i].value.trim() : '';
-                fixedSizes.push(rawFixed === '' ? null : parseFloat(rawFixed));
+                const val = parseNum(fixedInputs[i] ? fixedInputs[i].value : '');
+                fixedSizes.push((!isNaN(val) && val > 0) ? val : null);
               }
               currentFixed = fixedSizes;
 
               return {
-                thickness: parseFloat(document.getElementById('thickness').value) || 18,
+                thickness: thickness,
                 num_facades: count,
-                gap_between: parseFloat(document.getElementById('gap_between').value) || 0,
-                gap_left: parseFloat(document.getElementById('gap_left').value) || 0,
-                gap_right: parseFloat(document.getElementById('gap_right').value) || 0,
-                gap_top: parseFloat(document.getElementById('gap_top').value) || 0,
-                gap_bottom: parseFloat(document.getElementById('gap_bottom').value) || 0,
+                gap_between: Math.max(0, parseNum(document.getElementById('gap_between').value) || 0),
+                gap_left: Math.max(0, parseNum(document.getElementById('gap_left').value) || 0),
+                gap_right: Math.max(0, parseNum(document.getElementById('gap_right').value) || 0),
+                gap_top: Math.max(0, parseNum(document.getElementById('gap_top').value) || 0),
+                gap_bottom: Math.max(0, parseNum(document.getElementById('gap_bottom').value) || 0),
                 fixed_sizes: fixedSizes,
                 custom_names: names
               };
             } else {
               const gapInputs = document.querySelectorAll('.shelf-gap-input');
-              const gaps = [];
+              const rawInputs = [];
               for (let i = 0; i < count + 1; i++) {
-                gaps.push(parseFloat(gapInputs[i] ? gapInputs[i].value : 0) || 0);
+                rawInputs.push(gapInputs[i] ? gapInputs[i].value : '');
               }
-              currentGaps = gaps;
+              currentRawGaps = rawInputs;
+
+              const calc = computeShelfGapsPreview(axisLengthMm, count, thickness, rawInputs);
+              const errEl = document.getElementById('shelfGapError');
+              if (calc.error) {
+                errEl.textContent = calc.error;
+                errEl.classList.remove('hidden');
+              } else {
+                errEl.textContent = '';
+                errEl.classList.add('hidden');
+              }
+
+              const badges = document.querySelectorAll('.shelf-calc-badge');
+              for (let i = 0; i < count + 1; i++) {
+                if (badges[i]) {
+                  badges[i].textContent = calc.gaps[i] + ' мм';
+                }
+              }
 
               return {
-                thickness: parseFloat(document.getElementById('thickness').value) || 18,
+                thickness: thickness,
                 num_items: count,
-                gaps: gaps,
+                gaps: calc.gaps,
+                raw_gaps: rawInputs,
                 custom_names: names
               };
             }
           }
 
-          function renderShelfGaps(count, gapsArr) {
+          function renderShelfGaps(count, rawArr, computedArr) {
             const container = document.getElementById('shelfGapsContainer');
             container.innerHTML = '';
             for (let i = 0; i < count + 1; i++) {
@@ -328,15 +438,21 @@ module FurnitureTools
               lbl.textContent = 'Проміжок ' + (i + 1) + ':';
 
               const inp = document.createElement('input');
-              inp.type = 'number';
-              inp.step = '0.5';
-              inp.min = '0';
+              inp.type = 'text';
+              inp.placeholder = 'Авто';
               inp.className = 'shelf-gap-input';
-              inp.value = (gapsArr && gapsArr[i] !== undefined) ? gapsArr[i] : 0;
+              const existing = (rawArr && rawArr[i] !== undefined) ? String(rawArr[i]) : '';
+              inp.value = existing;
               inp.addEventListener('input', () => notifyRuby('update_params', buildPayload()));
+
+              const badge = document.createElement('span');
+              badge.className = 'calc-val shelf-calc-badge';
+              const shown = (computedArr && computedArr[i] !== undefined) ? computedArr[i] : 0;
+              badge.textContent = shown + ' мм';
 
               row.appendChild(lbl);
               row.appendChild(inp);
+              row.appendChild(badge);
               container.appendChild(row);
             }
           }
@@ -385,6 +501,7 @@ module FurnitureTools
 
           function initDialog(data) {
             currentMode = data.mode || 'facades';
+            axisLengthMm = parseFloat(data.axis_length) || 0;
 
             if (currentMode === 'facades') {
               document.getElementById('dirBadge').textContent = data.axis_label + ' • ' + data.direction_label;
@@ -397,7 +514,7 @@ module FurnitureTools
               document.getElementById('itemsCardLabel').textContent =
                 'Фіксовані розміри (мм, пусто = авто) та свої назви (пусто = стандарт)';
               document.getElementById('itemsHint').textContent =
-                'Якщо вказати розмір для частини фасадів, залишок розподілиться порівну; порожня назва = стандартна.';
+                'Порожні фасадні розміри діляться порівну; порожня назва = стандартна.';
               document.getElementById('applyBtn').textContent = 'Створити фасади';
 
               document.getElementById('thickness').value = data.thickness;
@@ -428,10 +545,12 @@ module FurnitureTools
               document.getElementById('thickness').value = data.thickness;
               document.getElementById('num_items').value = data.num_items;
 
-              currentGaps = data.gaps || [];
               currentNames = data.custom_names || [];
-              renderShelfGaps(data.num_items, currentGaps);
+              const initGaps = data.gaps || [];
+              currentRawGaps = new Array(data.num_items + 1).fill('');
+              renderShelfGaps(data.num_items, currentRawGaps, initGaps);
               renderItems('shelves', data.num_items, [], currentNames);
+              buildPayload();
             }
           }
 
@@ -444,7 +563,9 @@ module FurnitureTools
                 if (currentMode === 'facades') {
                   renderItems('facades', count, currentFixed, currentNames);
                 } else {
-                  renderShelfGaps(count, currentGaps);
+                  const thickness = Math.max(0.1, parseNum(document.getElementById('thickness').value) || 18);
+                  const calc = computeShelfGapsPreview(axisLengthMm, count, thickness, currentRawGaps);
+                  renderShelfGaps(count, currentRawGaps, calc.gaps);
                   renderItems('shelves', count, [], currentNames);
                 }
               }
@@ -477,6 +598,7 @@ module ShelfCalculator
       @selected_axis = nil
       @dialog = nil
       @gaps_mm = []
+      @raw_gaps = []
       @generated = false
       @prev_transparency = nil
       @params = {
@@ -554,7 +676,8 @@ module ShelfCalculator
         num_items: 4,
         custom_names: Array.new(4, "")
       }
-      @gaps_mm = default_equal_gaps(axis_length_mm(@selected_axis), @params[:num_items], @params[:thickness])
+      @raw_gaps = Array.new(5, "")
+      @gaps_mm = calculate_shelf_gaps(axis_length_mm(@selected_axis), @params[:num_items], @params[:thickness], @raw_gaps)
       open_dialog
       view.invalidate
     end
@@ -664,11 +787,54 @@ module ShelfCalculator
       end
     end
 
-    def default_equal_gaps(total_len, num_items, thickness)
+    def calculate_shelf_gaps(total_len, num_items, thickness, raw_inputs)
       num_gaps = num_items + 1
-      free_len = total_len - (num_items * thickness)
-      each_gap = free_len / num_gaps.to_f
-      Array.new(num_gaps) { each_gap.round(2) }
+      net_span = total_len - (num_items * thickness)
+      return Array.new(num_gaps, 0.0) if net_span < -0.01
+
+      fixed_vals = Array.new(num_gaps, nil)
+      auto_indices = []
+      fixed_sum = 0.0
+
+      num_gaps.times do |i|
+        raw = raw_inputs ? raw_inputs[i] : nil
+        if !raw.nil? && !raw.to_s.strip.empty?
+          val = FurnitureTools.parse_float(raw)
+          if val >= 0.0
+            r = val.round(1)
+            fixed_vals[i] = r
+            fixed_sum = (fixed_sum + r).round(1)
+          else
+            auto_indices << i
+          end
+        else
+          auto_indices << i
+        end
+      end
+
+      if auto_indices.empty?
+        return Array.new(num_gaps) { |i| (fixed_vals[i] || 0.0).round(1) }
+      end
+
+      remainder = net_span - fixed_sum
+      return Array.new(num_gaps) { |i| (fixed_vals[i] || 0.0).round(1) } if remainder < -0.01
+
+      each_auto = ([remainder, 0.0].max / auto_indices.length.to_f).round(1)
+      result = Array.new(num_gaps, 0.0)
+      sum_before_last = 0.0
+      last_auto_idx = auto_indices.last
+
+      num_gaps.times do |i|
+        if !fixed_vals[i].nil?
+          result[i] = fixed_vals[i]
+        elsif i != last_auto_idx
+          result[i] = each_auto
+        end
+        sum_before_last = (sum_before_last + result[i]).round(1) if i != last_auto_idx
+      end
+
+      result[last_auto_idx] = [(net_span - sum_before_last).round(1), 0.0].max
+      result
     end
 
     def valid_layout?
@@ -747,9 +913,12 @@ module ShelfCalculator
     def apply_data_from_js(json_str)
       data = JSON.parse(json_str)
       n = [FurnitureTools.parse_int(data["num_items"]), 1].max
-      @params[:thickness] = FurnitureTools.parse_float(data["thickness"])
+      t = FurnitureTools.parse_float(data["thickness"])
+      @params[:thickness] = t
       @params[:num_items] = n
-      @gaps_mm = Array(data["gaps"]).map { |g| FurnitureTools.parse_float(g) }
+
+      @raw_gaps = Array.new(n + 1) { |i| data["raw_gaps"] ? data["raw_gaps"][i].to_s : "" }
+      @gaps_mm = calculate_shelf_gaps(axis_length_mm(@selected_axis), n, t, @raw_gaps)
 
       raw_names = Array(data["custom_names"])
       @params[:custom_names] = Array.new(n) { |i| raw_names[i].to_s }
@@ -783,7 +952,7 @@ module ShelfCalculator
 
     def generate_shelves
       unless valid_layout?
-        UI.messagebox("Перевірте розміри проміжків і товщину: сума перевищує розмір ніші або містить від'ємні значення.")
+        UI.messagebox("Задані розміри або товщина не вміщаються у нішу (перевищують доступний розмір або містять від'ємні значення).")
         return false
       end
 
@@ -1089,32 +1258,29 @@ module FacadeCalculator
         end
       end
 
-      remainder = net_span - fixed_sum
-      return nil if remainder < -0.01
-
       if free_indices.empty?
-        return nil if (fixed_sum - net_span).abs > 0.5 && fixed_sum > net_span + 0.01
-        return Array.new(num_facades) { |i| fixed_sizes[i].to_f }
+        return nil if fixed_sum > net_span + 0.01
+        return Array.new(num_facades) { |i| fixed_sizes[i].to_f.round(1) }
       end
 
-      return nil if remainder <= 0.0
+      remainder = net_span - fixed_sum
+      return nil if remainder <= 0.01
 
       each_free = (remainder / free_indices.length.to_f).round(1)
       sizes = Array.new(num_facades, 0.0)
-      assigned_sum = 0.0
+      sum_before_last = 0.0
+      last_free_idx = free_indices.last
 
       num_facades.times do |i|
         if !fixed_sizes[i].nil? && fixed_sizes[i] > 0.0
           sizes[i] = fixed_sizes[i].round(1)
-        else
+        elsif i != last_free_idx
           sizes[i] = each_free
         end
-        assigned_sum += sizes[i]
+        sum_before_last = (sum_before_last + sizes[i]).round(1) if i != last_free_idx
       end
 
-      diff = (net_span - assigned_sum).round(1)
-      last_free_idx = free_indices.last
-      sizes[last_free_idx] = (sizes[last_free_idx] + diff).round(1)
+      sizes[last_free_idx] = (net_span - sum_before_last).round(1)
       return nil if sizes.any? { |s| s <= 0.0 }
 
       sizes
@@ -1414,7 +1580,7 @@ module FacadeCalculator
     def generate_facades
       boxes = compute_facade_boxes
       if boxes.nil? || boxes.empty?
-        UI.messagebox("Перевірте розміри зазорів, товщину та фіксовані розміри фасадів: сума не поміщається в проріз.")
+        UI.messagebox("Задані розміри фасадів, товщина або зазори не вміщаються у проріз.")
         return false
       end
 
