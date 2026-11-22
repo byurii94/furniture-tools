@@ -6,7 +6,7 @@ require 'sketchup'
 require 'extensions'
 
 module FurnitureTools
-  VERSION = "1.0.9" unless const_defined?(:VERSION)
+  VERSION = "1.0.10" unless const_defined?(:VERSION)
   REMOTE_BASE_URL = "https://raw.githubusercontent.com/byurii94/furniture-tools/main" unless const_defined?(:REMOTE_BASE_URL)
 
   def self.parse_float(val)
@@ -514,7 +514,7 @@ module FurnitureTools
               document.getElementById('itemsCardLabel').textContent =
                 'Фіксовані розміри (мм, пусто = авто) та свої назви (пусто = стандарт)';
               document.getElementById('itemsHint').textContent =
-                'Порожні фасадні розміри діляться порівну; порожня назва = стандартна.';
+                'Порожні фасадні розміри діляться точно порівну без округлення; порожня назва = стандартна.';
               document.getElementById('applyBtn').textContent = 'Створити фасади';
 
               document.getElementById('thickness').value = data.thickness;
@@ -1240,6 +1240,7 @@ module FacadeCalculator
       @params[:custom_names] = Array.new(n) { |i| arr_names[i].to_s }
     end
 
+    # Точний рівномірний розподіл фасадів без округлення до 0.1 мм
     def calculate_segment_sizes(total_available_mm, num_facades, gap_between_mm, fixed_sizes)
       return nil if num_facades <= 0
       total_gaps = (num_facades - 1) * gap_between_mm
@@ -1252,7 +1253,7 @@ module FacadeCalculator
       num_facades.times do |i|
         f_val = fixed_sizes[i]
         if !f_val.nil? && f_val > 0.0
-          fixed_sum += f_val
+          fixed_sum += f_val.to_f
         else
           free_indices << i
         end
@@ -1260,30 +1261,20 @@ module FacadeCalculator
 
       if free_indices.empty?
         return nil if fixed_sum > net_span + 0.01
-        return Array.new(num_facades) { |i| fixed_sizes[i].to_f.round(1) }
+        return Array.new(num_facades) { |i| fixed_sizes[i].to_f }
       end
 
       remainder = net_span - fixed_sum
       return nil if remainder <= 0.01
 
-      each_free = (remainder / free_indices.length.to_f).round(1)
-      sizes = Array.new(num_facades, 0.0)
-      sum_before_last = 0.0
-      last_free_idx = free_indices.last
-
-      num_facades.times do |i|
+      each_free = remainder / free_indices.length.to_f
+      Array.new(num_facades) do |i|
         if !fixed_sizes[i].nil? && fixed_sizes[i] > 0.0
-          sizes[i] = fixed_sizes[i].round(1)
-        elsif i != last_free_idx
-          sizes[i] = each_free
+          fixed_sizes[i].to_f
+        else
+          each_free
         end
-        sum_before_last = (sum_before_last + sizes[i]).round(1) if i != last_free_idx
       end
-
-      sizes[last_free_idx] = (net_span - sum_before_last).round(1)
-      return nil if sizes.any? { |s| s <= 0.0 }
-
-      sizes
     end
 
     def compute_facade_boxes
